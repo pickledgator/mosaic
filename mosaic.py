@@ -13,7 +13,7 @@ import csv
 logging.basicConfig(format='%(asctime)s %(levelname)s [%(module)s] %(message)s', level=logging.INFO)
 
 class Stitch:
-	def __init__(self, dirPath=None):
+	def __init__(self, dirPath=None, outScale=1.0, inScale=1.0):
 		self.logger = logging.getLogger()
 		if dirPath == None:
 			self.logger.error("You must specify a directory path to the source images!")
@@ -22,6 +22,8 @@ class Stitch:
 			self.logger.error("Directory does not exist!")
 			return
 		self.dirPath = dirPath
+		self.outScale = outScale
+		self.inScale = inScale
 
 		# grab filenames from directory
 		self.filenames = self.getFilenames(self.dirPath)
@@ -41,30 +43,38 @@ class Stitch:
 				except ValueError:
 					row[key] = val
 			poseData.append(row)
+		self.logger.info("Read {} rows from pose.csv".format(len(poseData)))
 
 		# helper dict for quickly finding pose data in O(1)
-		def buildDict(seq, key):
-			return dict((d[key], dict(d, index=i)) for (i, d) in enumerate(seq))
-		poseByFilenameList = buildDict(poseData, key="filename")
+		poseByFilenameList = dict((d["filename"], dict(d, index=i)) for (i, d) in enumerate(poseData))
+
+		# compute scaling values for input and output images
+		tmp = cv2.imread(self.filenames[0])
+		originalWidth = tmp.shape[1]
+		self.inWidth = int(originalWidth*self.inScale)
+		self.windowSize = (self.inWidth*2,self.inWidth*2) # this should be a large canvas, used to create container size
+		self.outWidth = int(self.windowSize[0]*self.outScale)
+		self.logger.info("Scaling input image widths from {} to {}".format(originalWidth,self.inWidth))
+		self.logger.info("Using canvas container width (input x2): {}".format(self.windowSize[0]))
+		self.logger.info("Scaling output image width from {} to {}".format(self.windowSize[0],self.outWidth))
 
 		# create cvimage objects
 		self.images = []
 		for i in self.filenames:
 			self.images.append(cv2.imread(i)) # open the file
-			self.images[-1] = imutils.resize(self.images[-1], width=200) # reduce computation time
+			self.images[-1] = imutils.resize(self.images[-1], width=self.inWidth) # reduce computation time
 			poseI = poseByFilenameList[os.path.basename(i)] # get dict elements from filename
 			yawI = poseI['yaw'] # already in degrees as needed by opencv rotation function
 			self.logger.info("Rotating image {} by {} degrees".format(i, yawI))
 			self.images[-1] = self.rotateImageAndCenter(self.images[-1],yawI)
 
-		# init other variable lists
+		# init other variables
 		self.kps = []
 		self.features = []
 		self.M = []
 		self.H = []
 		self.results = []
-		self.shift = [200,200]
-		self.windowSize = (1000,1000)
+		self.shift = [200,200] # makes sure that the homography doesn't end up cutting off some of the stitched image
 
 	def rotateImageAndCenter(self, img, degreesCCW=0):
 		scaleFactor = 1.0
@@ -82,6 +92,17 @@ class Stitch:
 		rotatedImg = cv2.warpAffine(img, M, dsize=(int(newX),int(newY)))
 		return rotatedImg
 
+	def scaleAndCrop(self, img, scaleFactor=1.0):
+		resized = imutils.resize(img, width=self.outWidth)
+		#cv2.imshow("Scaled",resized)
+		grey = cv2.cvtColor(resized,cv2.COLOR_BGR2GRAY)
+		ret,thresh = cv2.threshold(grey,10,255,cv2.THRESH_BINARY)
+		out = cv2.findContours(thresh, 1, 2)
+		cnt = out[0]
+		x,y,w,h = cv2.boundingRect(cnt)
+		crop = resized[y:y+h,x:x+w]
+		return crop
+
 	def getFilenames(self, sPath):
 		filenames = []
 		for sChild in os.listdir(sPath):     
@@ -97,7 +118,8 @@ class Stitch:
 
 	def process(self, ratio=0.75, reprojThresh=4.0, showMatches=False):
 
-		for img in self.images:
+		for i,img in enumerate(self.images):
+			self.logger.info("Extracting SIFT features for input image {} of {}...".format(i+1,len(self.images)))
 			(keypts, feats) = self.extractFeatures(img)
 			self.kps.append(keypts)
 			self.features.append(feats)
@@ -111,13 +133,15 @@ class Stitch:
 
 		containerKpts = []
 		containerFeats = []
-		for i,img in enumerate(self.images[1:-1]):
+		for i,img in enumerate(self.images[:-1]):
 
 			# todo, add continue if we're on the selected base image
 
 			# find keypoints of new container
+			self.logger.info("Extracting SIFT features for container, iteration {} of {}...".format(i+1,len(self.images)-1))
 			(containerKpts, containerFeats) = self.extractFeatures(container)
 
+			self.logger.info("Computing matches for image {} of {}...".format(i+1,len(self.images)-1))
 			kpsMatches = self.matchKeypoints(self.kps[i+1], containerKpts, self.features[i+1], containerFeats, ratio, reprojThresh)
 			if kpsMatches == None:
 				self.logger.warning("kpsMatches == None!")
@@ -141,21 +165,19 @@ class Stitch:
 			# add other images that have been warped
 			container = self.addImage(res, container, transparent=False)
 
-		# check to see if the keypoint matches should be visualized
-		#if showMatches:
-			#for i,image in enumerate(self.images):
-			#	cv2.imshow("Image {}".format(i), image)
-			#cv2.imshow("Result", container)
-			#cv2.waitKey(0)
+		scaledContainer = self.scaleAndCrop(container, self.outScale)
+		#cv2.imshow("Raw Output",container)
+		cv2.imshow("Scaled Output",scaledContainer)
+		self.logger.info("Hit space bar to close viewer...")
+		cv2.waitKey(0)
 
 		# return the stitched image
 		return True
 
+	# not used
 	def addImageSlow(self, image, container):
 		for (x,y,c), value in np.ndenumerate(image):
-			print("{} {} {} {}".format(x,y,c,value))
 			if container[x,y,c] > 0 and value > 0:
-				self.logger.info("Setting {} at {},{},{}".format(value,x,y,c))
 				container.itemset((x,y,c),value)
 		return container
 
@@ -176,14 +198,10 @@ class Stitch:
 		ret,threshContainer = cv2.threshold(greyContainer,10,255,cv2.THRESH_BINARY)
 		intersect = cv2.bitwise_and(threshImage, threshContainer) # find intersection between container and new image
 		mask = cv2.subtract(threshImage,intersect) # subtract the intersection, leaving just the new part to union
-		kernel = np.ones((1,1),'uint8') # for dilation below
+		kernel = np.ones((3,3),'uint8') # for dilation below
 		mask = cv2.dilate(mask,kernel,iterations=1) # make the mask slightly larger so we don't get blank lines on the edges
 		maskedImage = cv2.bitwise_and(image, image, mask=mask) # apply mask
 		con = cv2.add(container, maskedImage) # add the new pixels
-		cv2.imshow("Container", con)
-		cv2.waitKey(0)
-		#res = cv2.add(image, container)
-		#res = res / 2.0
 		return con
 
 
@@ -192,7 +210,6 @@ class Stitch:
 		gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
 		# detect and extract features from the image
-		self.logger.info("Running SIFT, extracting features...")
 		descriptor = cv2.xfeatures2d.SIFT_create()
 		(kps, features) = descriptor.detectAndCompute(image, None)
 		self.logger.info("Found {} keypoints in frame".format(len(kps)))
@@ -206,7 +223,6 @@ class Stitch:
 	def matchKeypoints(self, kpsA, kpsB, featuresA, featuresB, ratio, reprojThresh):
 		# compute the raw matches and initialize the list of actual
 		# matches
-		self.logger.info("Computing matches...")
 
 		# FLANN_INDEX_KDTREE = 0
 		# index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
@@ -270,9 +286,11 @@ class Stitch:
 if __name__=="__main__":
 	ap = argparse.ArgumentParser()
 	ap.add_argument("-d", "--dir", required=True, help="directory of images (jpg, png)")
+	ap.add_argument("-os", "--outscale", default=1.0, type=float, help="ratio by which to scale the output image")
+	ap.add_argument("-is", "--inscale", default=1.0, type=float, help="ratio by which to scale the input images (for faster processing)")
 	args = vars(ap.parse_args())
 
-	mosaic = Stitch(args['dir'])
+	mosaic = Stitch(args['dir'], args['outscale'], args['inscale'])
 	res = mosaic.process(showMatches=True)
 	if not res:
 		mosaic.logger.error('Mosaic failed.')
