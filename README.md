@@ -15,3 +15,7 @@ On a 13" macbook pro, the following command provides a nice balance between scre
 ```
 ./mosaic.py -d datasets/example1 -is 0.10 -os 0.9
 ```
+
+``-is`` is the scaling on the input images (smaller value = smaller images, faster processing)
+``-os`` is the scaling on the output container (smaller value = smaller output mosaic)
+``-m`` is for intermediate matching visualizations.
