@@ -29,24 +29,33 @@ class Stitch:
 			self.logger.error("Error reading filenames, was directory empty?")
 			return
 
-		# create cvimage objects
-		self.images = []
-		for i in self.filenames:
-			self.images.append(cv2.imread(i))
-			self.images[-1] = imutils.resize(self.images[-1], width=400)
-			self.images[-1] = cv2.copyMakeBorder(self.images[-1],20,20,20,20,cv2.BORDER_CONSTANT,0)
-			rot = cv2.getRotationMatrix2D((self.images[-1].shape[1],self.images[-1].shape[0]),10,1)
-			dst = cv2.warpAffine(self.images[-1],rot,(self.images[-1].shape[1],self.images[-1].shape[0]))
-			cv2.imshow("Ori",self.images[-1])
-			cv2.imshow("Rot",dst)
-			cv2.waitKey(0)
-
 		# load pose data
 		self.logger.info("Loading pose.csv...")
 		reader = csv.DictReader(open(self.dirPath+'/pose.csv'))
 		poseData = []
 		for row in reader:
+			for key,val in row.iteritems():
+				val = val.replace('\xc2\xad', '') # some weird unicode characters in the list from pdf
+				try:
+					row[key] = float(val)
+				except ValueError:
+					row[key] = val
 			poseData.append(row)
+
+		# helper dict for quickly finding pose data in O(1)
+		def buildDict(seq, key):
+			return dict((d[key], dict(d, index=i)) for (i, d) in enumerate(seq))
+		poseByFilenameList = buildDict(poseData, key="filename")
+
+		# create cvimage objects
+		self.images = []
+		for i in self.filenames:
+			self.images.append(cv2.imread(i)) # open the file
+			self.images[-1] = imutils.resize(self.images[-1], width=200) # reduce computation time
+			poseI = poseByFilenameList[os.path.basename(i)] # get dict elements from filename
+			yawI = poseI['yaw'] # already in degrees as needed by opencv rotation function
+			self.logger.info("Rotating image {} by {} degrees".format(i, yawI))
+			self.images[-1] = self.rotateImageAndCenter(self.images[-1],yawI)
 
 		# init other variable lists
 		self.kps = []
@@ -56,6 +65,22 @@ class Stitch:
 		self.results = []
 		self.shift = [200,200]
 		self.windowSize = (1000,1000)
+
+	def rotateImageAndCenter(self, img, degreesCCW=0):
+		scaleFactor = 1.0
+		(oldY,oldX,oldC) = img.shape #note: numpy uses (y,x) convention but most OpenCV functions use (x,y)
+		M = cv2.getRotationMatrix2D(center=(oldX/2,oldY/2), angle=degreesCCW, scale=scaleFactor) #rotate about center of image.
+		# choose a new image size.
+		newX,newY = oldX*scaleFactor,oldY*scaleFactor
+		# include this if you want to prevent corners being cut off
+		r = np.deg2rad(degreesCCW)
+		newX,newY = (abs(np.sin(r)*newY) + abs(np.cos(r)*newX),abs(np.sin(r)*newX) + abs(np.cos(r)*newY))
+		# find the translation that moves the result to the center of that region.
+		(tx,ty) = ((newX-oldX)/2,(newY-oldY)/2)
+		M[0,2] += tx # third column of matrix holds translation, which takes effect after rotation.
+		M[1,2] += ty 
+		rotatedImg = cv2.warpAffine(img, M, dsize=(int(newX),int(newY)))
+		return rotatedImg
 
 	def getFilenames(self, sPath):
 		filenames = []
@@ -68,7 +93,7 @@ class Stitch:
 			return None
 		else:
 			self.logger.info("Read {} files from directory: {}".format(len(filenames), sPath))
-	    	return filenames
+			return filenames
 
 	def process(self, ratio=0.75, reprojThresh=4.0, showMatches=False):
 
@@ -77,35 +102,43 @@ class Stitch:
 			self.kps.append(keypts)
 			self.features.append(feats)
 
-		for i,img in enumerate(self.images[:-1]):
-			kpsMatches = self.matchKeypoints(self.kps[i+1], self.kps[i], self.features[i+1], self.features[i], ratio, reprojThresh)
+		# create some empty images for use in combining results
+		base = np.zeros((self.windowSize[1],self.windowSize[0],3), np.uint8)
+		container = np.array(base)
+		# add base image
+		base[self.shift[1]:self.images[0].shape[0]+self.shift[1], self.shift[0]:self.images[0].shape[1]+self.shift[0]] = self.images[0]
+		container = self.addImage(base, container, transparent=False)
+
+		containerKpts = []
+		containerFeats = []
+		for i,img in enumerate(self.images[1:-1]):
+
+			# todo, add continue if we're on the selected base image
+
+			# find keypoints of new container
+			(containerKpts, containerFeats) = self.extractFeatures(container)
+
+			kpsMatches = self.matchKeypoints(self.kps[i+1], containerKpts, self.features[i+1], containerFeats, ratio, reprojThresh)
 			if kpsMatches == None:
+				self.logger.warning("kpsMatches == None!")
 				continue
 			self.M.append(kpsMatches)
 
 			(matches, homography, status) = self.M[-1]
 			self.H.append(homography)
-			shiftH = np.array([[1,0,self.shift[0]],[0,1,self.shift[1]],[0,0,1]], np.float64)
-			chainedH = np.array([[1,0,0],[0,1,0],[0,0,1]], np.float64)
-			chainedH = shiftH.dot(chainedH)
-			for h in reversed(self.H):
-				chainedH = chainedH.dot(h)
-			res = cv2.warpPerspective(self.images[i+1], chainedH, self.windowSize)
-			self.results.append(res)
-			vis = self.drawMatches(self.images[i+1], self.images[i], self.kps[i+1], self.kps[i], matches, status)
+			#shiftH = np.array([[1,0,self.shift[0]],[0,1,self.shift[1]],[0,0,1]], np.float64)
+			#chainedH = np.array([[1,0,0],[0,1,0],[0,0,1]], np.float64)
+			#chainedH = shiftH.dot(chainedH)
+			#for h in reversed(self.H):
+		#		chainedH = chainedH.dot(h)
+			#res = cv2.warpPerspective(self.images[i+1], chainedH, self.windowSize)
+			res = cv2.warpPerspective(self.images[i+1], self.H[-1], self.windowSize)
+			#self.results.append(res)
+			# vis = self.drawMatches(self.images[i+1], container, self.kps[i+1], containerKpts, matches, status)
 			# cv2.imshow("Matches", vis)
-			# cv2.waitKey(0)
+			# cv2.waitKey(0)		
 
-		# create some empty images for use in combining results
-		base = np.zeros((self.windowSize[1],self.windowSize[0],3), np.uint8)
-		container = np.array(base)
-
-		# add base image
-		base[self.shift[1]:self.images[0].shape[0]+self.shift[1], self.shift[0]:self.images[0].shape[1]+self.shift[0]] = self.images[0]
-		container = self.addImage(base,container, transparent=False)
-
-		# add other images that have been warped
-		for res in self.results:
+			# add other images that have been warped
 			container = self.addImage(res, container, transparent=False)
 
 		# check to see if the keypoint matches should be visualized
@@ -141,10 +174,12 @@ class Stitch:
 		greyContainer = cv2.cvtColor(container,cv2.COLOR_BGR2GRAY)
 		ret,threshImage = cv2.threshold(greyImage,10,255,cv2.THRESH_BINARY)
 		ret,threshContainer = cv2.threshold(greyContainer,10,255,cv2.THRESH_BINARY)
-		intersect = cv2.bitwise_and(threshImage, threshContainer)
-		mask = cv2.subtract(threshImage,intersect)
-		maskedImage = cv2.bitwise_and(image, image, mask=mask)
-		con = cv2.add(container, maskedImage)
+		intersect = cv2.bitwise_and(threshImage, threshContainer) # find intersection between container and new image
+		mask = cv2.subtract(threshImage,intersect) # subtract the intersection, leaving just the new part to union
+		kernel = np.ones((1,1),'uint8') # for dilation below
+		mask = cv2.dilate(mask,kernel,iterations=1) # make the mask slightly larger so we don't get blank lines on the edges
+		maskedImage = cv2.bitwise_and(image, image, mask=mask) # apply mask
+		con = cv2.add(container, maskedImage) # add the new pixels
 		cv2.imshow("Container", con)
 		cv2.waitKey(0)
 		#res = cv2.add(image, container)
@@ -238,9 +273,9 @@ if __name__=="__main__":
 	args = vars(ap.parse_args())
 
 	mosaic = Stitch(args['dir'])
-	#res = mosaic.process(showMatches=True)
-	#if not res:
-	#	mosaic.logger.error('Mosaic failed.')
+	res = mosaic.process(showMatches=True)
+	if not res:
+		mosaic.logger.error('Mosaic failed.')
 
 
 
