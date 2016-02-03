@@ -13,7 +13,7 @@
 On a 13" macbook pro, the following command provides a nice balance between screen real estate and processing time.
 
 ```
-./mosaic.py -d datasets/example1 -is 0.10 -os 0.9
+./mosaic.py -d datasets/example1 -is 0.1 -os 0.9
 ```
 
 ``-is`` is the scaling on the input images (smaller value = smaller images, faster processing)
