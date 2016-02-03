@@ -32,8 +32,8 @@ On a 13" macbook pro, the following command provides a nice balance between scre
 
 The following shows the intermediate feature matching
 
-![matching](docs/sift_features_and_matching.jpg)
+![matching](docs/sift_features_and_matching.png)
 
 The following shows the result after stitching 24 images
 
-![output](docs/final_output.jpg)
+![output](docs/final_output.png)
