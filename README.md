@@ -12,6 +12,6 @@
 
 On a 13" macbook pro, the following command provides a nice balance between screen real estate and processing time.
 
-'''
+```
 ./mosaic.py -d datasets/example1 -is 0.10 -os 0.9
-'''
+```
