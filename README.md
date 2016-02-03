@@ -10,6 +10,14 @@
 
 ## Usage
 
+Make sure pose.csv is located within the same directory as the images. The pose.csv file should have the following format:
+
+```
+filename,latitude,longitude,altitude,yaw,pitch,roll
+dji_0644.jpg,­123.114661,38.426805,90.689292,9.367337,1.260910,0.385252
+...
+```
+
 On a 13" macbook pro, the following command provides a nice balance between screen real estate and processing time.
 
 ```
@@ -19,3 +27,13 @@ On a 13" macbook pro, the following command provides a nice balance between scre
 ``-is`` is the scaling on the input images (smaller value = smaller images, faster processing)
 ``-os`` is the scaling on the output container (smaller value = smaller output mosaic)
 ``-m`` is for intermediate matching visualizations.
+
+## Examples
+
+The following shows the intermediate feature matching
+
+![matching](docs/sift_features_and_matching.jpg)
+
+The following shows the result after stitching 24 images
+
+![output](docs/final_output.jpg)
